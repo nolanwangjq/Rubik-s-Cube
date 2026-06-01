@@ -1,4 +1,4 @@
-from motions import RIGHT
+from motion import RIGHT
 
 
 class SafetyMonitor:
@@ -79,4 +79,3 @@ class SafetyMonitor:
 
     def can_forward(self, safe_distance=20):
         return self.distance_sensor.get_distance() > safe_distance
-

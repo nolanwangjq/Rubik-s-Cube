@@ -1,6 +1,6 @@
 import time
 
-from motions import RIGHT, MotionController, circle_cube
+from motion import RIGHT, MotionController, circle_cube
 from perception import DistanceSensor, SafetyMonitor, VisionSystem
 
 

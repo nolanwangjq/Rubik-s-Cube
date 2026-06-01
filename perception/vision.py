@@ -3,7 +3,7 @@ import threading
 import cv2
 import numpy as np
 
-from motions import RIGHT
+from motion import RIGHT
 
 
 LOWER_RANGES = {
@@ -160,4 +160,3 @@ class VisionSystem:
         self._stop.set()
         self.cap.release()
         cv2.destroyAllWindows()
-
