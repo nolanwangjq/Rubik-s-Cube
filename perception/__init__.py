@@ -1,1 +1,4 @@
-"""Perception package: sensors that turn raw signals into world state."""
+from .vision.distance import DistanceSensor
+from .vision.safety import SafetyMonitor
+from .vision.vision import VisionSystem
+
