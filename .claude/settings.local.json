@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d/Courses/电子系统导论/final/**)",
+      "Read(//d/Courses/电子系统导论/final/10. PWM与直流电机驱动/**)",
+      "Read(//d/Courses/电子系统导论/final/12. 自动控制/**)"
+    ]
+  }
+}
