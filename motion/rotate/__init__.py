@@ -28,6 +28,9 @@ __all__ = [
     "shutdown_rotate",
     "spin",
     "orbit",
+    "straight",   # <--- 新增直线运动
+    "FORWARD",    # <--- 新增向前常量
+    "BACKWARD",   # <--- 新增向后常量
     "LEFT",
     "RIGHT",
     "CW",
