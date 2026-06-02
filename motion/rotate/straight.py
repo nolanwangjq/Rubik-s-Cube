@@ -37,8 +37,8 @@ def straight(direction: str,
              *,
              target_speed_rps01: float = 1.9,
              stop_condition: Callable[[], bool] | None = None,
-             gains_l: tuple[float, float, float] = (30.0, 0.06, 20.0),
-             gains_r: tuple[float, float, float] = (40.0, 0.01, 23.0)) -> None:
+             gains_l: tuple[float, float, float] = (150.0, 0.06, 20.0),
+             gains_r: tuple[float, float, float] = (150.0, 0.01, 23.0)) -> None:
     """使用 pid_control.py 的专属参数闭环走直线
     
     Args:
