@@ -1,138 +1,106 @@
-"""Straight-line motion: drive forward or backward in a straight line."""
+"""Straight-line motion module integrated with the motion package framework."""
 
 from __future__ import annotations
 
 import time
 from typing import Callable
-
 from . import _hw
-from ._hw import (
-    LEFT,
-    RIGHT,
-    WheelSpeedPID,
-)
+from ._hw import LEFT, RIGHT
 
 FORWARD = "forward"
 BACKWARD = "backward"
 
-_PID_PERIOD_S = 0.1
-_SPEED_WINDOW_S = 0.1
+class PositionalPID:
+    """完全复制 pid_control.py 的位置式 PID 算法，以确保你调好的参数完全适用"""
+    def __init__(self, P, I, D, target_speed):
+        self.Kp = P
+        self.Ki = I
+        self.Kd = D
+        self.target_speed = target_speed
+        self.err_pre = 0
+        self.err_last = 0
+        self.integral = 0
+
+    def update(self, feedback_value):
+        self.err_pre = self.target_speed - feedback_value
+        self.integral += self.err_pre
+        derivative = self.err_pre - self.err_last
+        output = (self.Kp * self.err_pre) + (self.Ki * self.integral) + (self.Kd * derivative)
+        self.err_last = self.err_pre
+        
+        # 限制 PWM 占空比在 0 到 100 之间
+        return max(0.0, min(100.0, output))
 
 
 def straight(direction: str,
              mode: str,
              *,
-             speed_cmps: float = 15.0,
-             distance_cm: float | None = None,
-             duration_s: float | None = None,
-             stop_condition: Callable[[], bool] | None = None) -> None:
-    """Drive the chassis in a straight line using closed-loop PID control.
-
+             target_speed_rps01: float = 1.9,
+             stop_condition: Callable[[], bool] | None = None,
+             gains_l: tuple[float, float, float] = (30.0, 0.06, 20.0),
+             gains_r: tuple[float, float, float] = (40.0, 0.01, 23.0)) -> None:
+    """使用 pid_control.py 的专属参数闭环走直线
+    
     Args:
-        direction: motion.straight.FORWARD or motion.straight.BACKWARD.
-        mode: 
-            "speed": runs continuously (capped by duration_s). 
-            "distance": drives exactly distance_cm and then stops.
-            "condition": runs continuously until stop_condition() returns True.
-        speed_cmps: target linear speed, cm/s.
-        distance_cm: required in "distance" mode, cm.
-        duration_s: optional cap for "speed" mode.
-        stop_condition: a callable returning a boolean, required for "condition" mode.
+        direction: FORWARD (向前) 或 BACKWARD (向后)
+        mode: 必须为 "condition"（由外部视觉条件触发停止）
+        target_speed_rps01: 目标速度，单位为 圈/0.1秒 (默认 1.9)
+        stop_condition: 外部传入的视觉判断函数（返回 True 时停车）
+        gains_l: 左轮专属 PID 参数 (Kp, Ki, Kd)
+        gains_r: 右轮专属 PID 参数 (Kp, Ki, Kd)
     """
+    # 确保硬件层已初始化
     _hw.require_initialised()
+    
     if direction not in (FORWARD, BACKWARD):
-        raise ValueError(f"direction must be FORWARD or BACKWARD, got {direction!r}")
-    if speed_cmps <= 0:
-        raise ValueError("speed_cmps must be positive")
+        raise ValueError(f"Invalid direction: {direction}")
+    if mode != "condition":
+        raise ValueError("This integration version strictly requires mode='condition' for state machine usage.")
+    if stop_condition is None:
+        raise ValueError("stop_condition callback must be provided.")
 
+    # 1. 使用硬件抽象层统一控制车轮方向
     is_forward = (direction == FORWARD)
     _hw.set_wheel_direction(LEFT, forward=is_forward)
     _hw.set_wheel_direction(RIGHT, forward=is_forward)
 
-    init_duty = _hw.cmps_to_duty_estimate(speed_cmps)
+    # 2. 初始化专属的位置式 PID 控制器
+    pid_left = PositionalPID(*gains_l, target_speed_rps01)
+    pid_right = PositionalPID(*gains_r, target_speed_rps01)
 
-    if mode == "speed":
-        _straight_speed_mode(speed_cmps, init_duty, duration_s)
-    elif mode == "distance":
-        if distance_cm is None or distance_cm <= 0:
-            raise ValueError("distance_cm must be positive in 'distance' mode")
-        _straight_distance_mode(speed_cmps, init_duty, distance_cm)
-    elif mode == "condition":
-        if stop_condition is None:
-            raise ValueError("stop_condition must be provided in 'condition' mode")
-        _straight_condition_mode(speed_cmps, init_duty, stop_condition)
-    else:
-        raise ValueError(f"mode must be 'speed', 'distance', or 'condition', got {mode!r}")
+    # 3. 核心数学桥梁：通过底盘物理常数计算车轮周长
+    # 585 个脉冲等于 1 圈，转换得到的 cm 数即为周长
+    wheel_circumference = _hw.pulses_to_cm(585)
 
-    _hw.stop_all()
-
-
-def _straight_condition_mode(target_v: float,
-                             init_duty: float,
-                             stop_condition: Callable[[], bool]) -> None:
-    """Closed-loop straight motion until a custom condition evaluates to True."""
-    pid_l = WheelSpeedPID(target_v, init_duty)
-    pid_r = WheelSpeedPID(target_v, init_duty)
-
-    _hw.set_duty(LEFT, init_duty)
-    _hw.set_duty(RIGHT, init_duty)
+    # 给电机制动器一个初始占空比（对标原本的 origin_duty=5）
+    _hw.set_duty(LEFT, 5.0)
+    _hw.set_duty(RIGHT, 5.0)
 
     try:
         while True:
-            # 优先检查视觉条件：如果满足，直接退出直线运动状态
+            # 状态机核心：每轮循环优先检查视觉算法是否让我们停止
             if stop_condition():
-                return
+                break
 
-            t_start = time.time()
-            v_l, v_r = _hw.sample_speeds(_SPEED_WINDOW_S)
-            
-            _hw.set_duty(LEFT, pid_l.update(v_l))
-            _hw.set_duty(RIGHT, pid_r.update(v_r))
+            # 4. 采集当前真实的物理速度 (单位: cm/s)
+            # 该函数内部会阻塞 0.1 秒进行采样，完美替代了原本的 time.sleep(0.1)
+            v_l_cmps, v_r_cmps = _hw.sample_speeds(0.1)
 
-            elapsed = time.time() - t_start
-            time.sleep(max(0.0, _PID_PERIOD_S - elapsed))
+            # 5. 单位转换：将 cm/s 转换为 圈/0.1秒 
+            # 公式: (cm/s * 0.1s) / 周长 = 0.1秒内转过的圈数
+            lspeed_rps01 = (v_l_cmps * 0.1) / wheel_circumference
+            rspeed_rps01 = (v_r_cmps * 0.1) / wheel_circumference
+
+            # 6. 运行 PID 计算出新的 PWM 占空比
+            u_left = pid_left.update(lspeed_rps01)
+            u_right = pid_right.update(rspeed_rps01)
+
+            # 7. 应用到硬件
+            _hw.set_duty(LEFT, u_left)
+            _hw.set_duty(RIGHT, u_right)
+
     except KeyboardInterrupt:
-        return
-
-def _straight_speed_mode(target_v: float,
-                         init_duty: float,
-                         duration_s: float | None) -> None:
-    """Closed-loop constant-speed straight motion."""
-    # 这里使用的是 _hw.py 中统一的 PID 增益，
-    # 如果左右轮电机差异大，可以像你原本代码中那样传入不同的 (Kp, Ki, Kd) 元组
-    pid_l = WheelSpeedPID(target_v, init_duty)
-    pid_r = WheelSpeedPID(target_v, init_duty)
-
-    _hw.set_duty(LEFT, init_duty)
-    _hw.set_duty(RIGHT, init_duty)
-
-    t0 = time.time()
-    try:
-        while True:
-            v_l, v_r = _hw.sample_speeds(_SPEED_WINDOW_S)
-            _hw.set_duty(LEFT, pid_l.update(v_l))
-            _hw.set_duty(RIGHT, pid_r.update(v_r))
-            
-            if duration_s is not None and time.time() - t0 >= duration_s:
-                return
-            
-            # sample_speeds 已经阻塞了 _SPEED_WINDOW_S，此处无需额外大量 sleep
-            time.sleep(max(0.0, _PID_PERIOD_S - _SPEED_WINDOW_S))
-    except KeyboardInterrupt:
-        return
-
-def _straight_distance_mode(target_v: float,
-                            init_duty: float,
-                            distance_cm: float) -> None:
-    """Closed-loop straight motion by a fixed distance."""
-    pid_l = WheelSpeedPID(target_v, init_duty)
-    pid_r = WheelSpeedPID(target_v, init_duty)
-
-    # Note: 累积距离需要依赖编码器，此处重置计数器
-    _hw.reset_encoders()
-    _hw.set_duty(LEFT, init_duty)
-    _hw.set_duty(RIGHT, init_duty)
-
-    # 累计行驶距离的变量（因为 _hw.sample_speeds 内部会重置编码器，我们需要在此处自行累加）
-    total_dist_l = 0.0
-    total_dist_r = 0.0
+        pass
+    finally:
+        # 退出该状态时，安全关闭所有电机
+        _hw.stop_all()
